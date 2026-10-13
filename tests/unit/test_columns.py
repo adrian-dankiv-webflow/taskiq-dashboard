@@ -6,7 +6,65 @@ from sqlalchemy.schema import CreateIndex
 from taskiq_dashboard.api.columns import build_columns, build_filter_controls, resolve_sort
 from taskiq_dashboard.infrastructure.database.indexes import INDEX_PREFIX, managed_indexes
 from taskiq_dashboard.infrastructure.database.schemas import PostgresTask
-from taskiq_dashboard.infrastructure.settings import ColumnSettings
+from taskiq_dashboard.infrastructure.settings import ColumnSettings, Settings
+
+
+@pytest.mark.parametrize(
+    ('visible', 'filterable', 'sortable'),
+    [
+        (['id', 'name'], ['id', 'name'], []),
+        (['id'], ['id'], []),
+        (['id', 'status'], ['id', 'status'], []),
+        (['id', 'name', 'finished_at'], ['id', 'name'], ['finished_at']),
+        (['id', 'started_at', 'runtime'], ['id', 'started_at'], ['started_at', 'runtime']),
+    ],
+)
+def test_when_only_visible_columns_are_configured__then_defaults_follow_visible_columns(
+    visible,
+    filterable,
+    sortable,
+) -> None:
+    settings = ColumnSettings(visible=visible)
+    assert settings.filterable == filterable
+    assert settings.sortable == sortable
+
+
+@pytest.mark.parametrize('name', ['filterable', 'sortable'])
+def test_when_an_explicit_default_list_contains_hidden_columns__then_reject_it(name) -> None:
+    explicit = {name: getattr(ColumnSettings(), name)}
+    with pytest.raises(ValidationError, match=rf'columns\.{name}'):
+        ColumnSettings(visible=['id', 'name'], **explicit)
+
+
+def test_when_filter_and_sort_lists_are_explicitly_empty__then_keep_them_empty() -> None:
+    settings = ColumnSettings(filterable=[], sortable=[])
+    assert settings.filterable == []
+    assert settings.sortable == []
+
+
+def test_when_visible_columns_expand_on_revalidation__then_unspecified_defaults_expand_with_them() -> None:
+    settings = ColumnSettings(visible=['id'])
+    defaults = ColumnSettings()
+    updated = ColumnSettings.model_validate(settings.model_copy(update={'visible': defaults.visible}))
+    assert updated.filterable == defaults.filterable
+    assert updated.sortable == defaults.sortable
+
+
+def test_when_visible_is_configured_through_the_environment__then_nested_defaults_follow_it(monkeypatch) -> None:
+    monkeypatch.setenv('TASKIQ_DASHBOARD__COLUMNS__VISIBLE', '["id", "name"]')
+    monkeypatch.delenv('TASKIQ_DASHBOARD__COLUMNS__FILTERABLE', raising=False)
+    monkeypatch.delenv('TASKIQ_DASHBOARD__COLUMNS__SORTABLE', raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.columns.filterable == ['id', 'name']
+    assert settings.columns.sortable == []
+
+
+@pytest.mark.parametrize('name', ['filterable', 'sortable'])
+def test_when_an_environment_list_contains_hidden_columns__then_reject_it(monkeypatch, name) -> None:
+    monkeypatch.setenv('TASKIQ_DASHBOARD__COLUMNS__VISIBLE', '["id", "name"]')
+    monkeypatch.setenv(f'TASKIQ_DASHBOARD__COLUMNS__{name.upper()}', '["started_at"]')
+    with pytest.raises(ValidationError, match=rf'columns\.{name}'):
+        Settings(_env_file=None)
 
 
 def test_when_filterable_includes_runtime__then_settings_are_rejected() -> None:

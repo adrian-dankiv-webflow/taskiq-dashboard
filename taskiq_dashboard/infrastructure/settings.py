@@ -155,6 +155,11 @@ class ColumnSettings(pydantic_settings.BaseSettings):
         displayed = {key for key in self.visible if key in BUILTIN_COLUMN_KEYS} | {
             key for key in self.labels if key not in BUILTIN_COLUMN_KEYS
         }
+        for name in ('filterable', 'sortable'):
+            if name not in self.model_fields_set:
+                # Keep these as defaults so revalidation can adapt them to visible columns again.
+                default = type(self).model_fields[name].get_default()
+                object.__setattr__(self, name, [key for key in default if key in displayed])
         for key in self.filterable:
             if key == 'runtime':
                 msg = "'runtime' cannot be filtered; it is computed from started_at and finished_at"

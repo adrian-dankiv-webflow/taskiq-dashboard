@@ -21,7 +21,7 @@ Column behavior is configured using environment variables:
 
 The `runtime` column (labeled "Duration") shows the elapsed time between `started_at` and `finished_at` (e.g. `3m 4s`). It can be sorted. It cannot be filtered, because the value is computed from `started_at` and `finished_at`. Tasks with no `finished_at` yet sort last.
 
-A key in `FILTERABLE` or `SORTABLE` must be a column the list shows: a built-in key that is also in `VISIBLE`, or a key in `LABELS`. Any other key, including `runtime` in `FILTERABLE`, stops the application from starting.
+When `FILTERABLE` or `SORTABLE` is omitted, its defaults are limited to displayed columns, so existing configurations that only customize `VISIBLE` continue to work. Explicitly configured lists remain strict: each key must be a built-in key in `VISIBLE`, or a key in `LABELS`. Any other explicit key, including `runtime` in `FILTERABLE`, stops the application from starting.
 
 `id` and `name`, when both are filterable, share one global search box above the table that matches either field. Column-specific filters appear in their headers: `status` uses a dropdown, datetime columns use date ranges, labels use text fields, and `name` and `worker` use searchable comboboxes. Active values are shown beside the header filter icons. Text filters are case-insensitive and match a literal substring, including `%` and `_`. Leading and trailing whitespace is removed; values shorter than 2 characters after trimming are ignored. Filters combine with AND.
 
