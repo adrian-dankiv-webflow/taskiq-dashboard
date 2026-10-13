@@ -37,13 +37,23 @@ def test_when_label_column_is_filterable_and_sortable__then_settings_are_accepte
     assert 'env' in settings.sortable
 
 
+def test_when_using_the_documented_hidden_columns_example__then_settings_are_accepted() -> None:
+    settings = ColumnSettings(
+        visible=['id', 'status', 'started_at', 'finished_at'],
+        filterable=['id', 'status', 'started_at'],
+        sortable=['started_at', 'finished_at'],
+    )
+    assert [column.key for column in build_columns(settings)] == settings.visible
+    assert [control.param for control in build_filter_controls(settings)] == ['q', 'status', 'start_date']
+
+
 def test_when_using_default_columns__then_filter_and_sort_flags_match_shipped_behavior() -> None:
     columns = {column.key: column for column in build_columns(ColumnSettings())}
     assert columns['worker'].filterable is False
     assert columns['worker'].sortable is False
     assert columns['name'].filterable is True
     assert columns['name'].sortable is False
-    assert columns['name'].filter_kind == 'search'
+    assert columns['name'].filter_kind == 'combobox'
     assert columns['status'].filter_kind == 'status'
     assert columns['started_at'].filterable is True
     assert columns['started_at'].sortable is True
@@ -66,7 +76,7 @@ def test_when_worker_and_label_are_configured__then_columns_are_filterable_and_s
     }
     assert columns['worker'].filterable is True
     assert columns['worker'].sortable is True
-    assert columns['worker'].filter_kind == 'text'
+    assert columns['worker'].filter_kind == 'combobox'
     assert columns['env'].kind == 'label'
     assert columns['env'].filterable is True
     assert columns['env'].sortable is True
@@ -78,23 +88,26 @@ def test_when_building_filter_controls__then_id_and_name_share_one_search_box() 
         ColumnSettings(filterable=['worker', 'name', 'id', 'status', 'started_at', 'finished_at'])
     )
     assert [(control.kind, control.param, control.placeholder, control.in_header) for control in controls] == [
-        ('text', 'worker', 'Worker', True),
         ('search', 'q', 'Search by id or name', False),
-        ('status', 'status', 'All Statuses', False),
-        ('datetime', 'start_date', 'Pick dates', False),
-        ('datetime', 'finished_start', 'Finished', True),
+        ('combobox', 'worker', 'Worker', True),
+        ('combobox', 'name', 'Name', True),
+        ('status', 'status', 'All Statuses', True),
+        ('datetime', 'start_date', 'Pick dates', True),
+        ('datetime', 'finished_start', 'Pick dates', True),
     ]
-    assert controls[0].column_key == 'worker'
-    assert controls[4].column_key == 'finished_at'
+    assert controls[1].column_key == 'worker'
+    assert controls[5].column_key == 'finished_at'
     search = next(control for control in controls if control.kind == 'search')
     assert search.search_fields == ('id', 'name')
 
 
 def test_when_only_name_is_filterable__then_search_box_searches_name() -> None:
     controls = build_filter_controls(ColumnSettings(visible=['id', 'name'], filterable=['name'], sortable=[]))
-    assert len(controls) == 1
+    assert len(controls) == 2
     assert controls[0].placeholder == 'Search by name'
     assert controls[0].search_fields == ('name',)
+    assert controls[1].kind == 'combobox'
+    assert controls[1].in_header
 
 
 def test_when_sort_column_is_not_configured__then_fall_back_to_first_sortable_column() -> None:

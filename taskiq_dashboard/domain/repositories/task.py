@@ -25,6 +25,7 @@ class AbstractTaskRepository(ABC):
         text_filters: dict[str, str] | None = None,
         label_filters: dict[str, str] | None = None,
         search_fields: Collection[str] | None = None,
+        exact_filters: dict[str, str] | None = None,
     ) -> list[Task]:
         """
         Retrieve tasks with pagination and filtering.
@@ -40,13 +41,24 @@ class AbstractTaskRepository(ABC):
             offset: Number of tasks to skip
             finished_start: Filter by tasks finished at or after this datetime (inclusive)
             finished_end: Filter by tasks finished at or before this datetime (inclusive)
-            text_filters: Contains filters for built-in text columns, currently worker
+            text_filters: Contains filters for built-in name and worker columns
             label_filters: Contains filters for task label keys
             search_fields: Columns the name search covers. None searches id and name.
+            exact_filters: Exact matches for name and worker; overrides contains for the same column.
 
         Returns:
             List of tasks matching the criteria.
         """
+        ...
+
+    @abstractmethod
+    async def suggest_values(
+        self,
+        column: tp.Literal['name', 'worker'],
+        query: str = '',
+        limit: int = 20,
+    ) -> list[str]:
+        """Return distinct values ordered by their most recent occurrence, searching all tasks."""
         ...
 
     @abstractmethod

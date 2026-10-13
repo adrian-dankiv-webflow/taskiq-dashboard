@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import sqlalchemy as sa
 
+from taskiq_dashboard.infrastructure.database.expressions import label_text
 from taskiq_dashboard.infrastructure.settings import ColumnSettings
 
 
@@ -90,15 +91,15 @@ def _indexes_for_key(
         part = f'label_{key}'
         indexes = []
         if key in sortable:
-            indexes.append(_btree(index_name(part, 'sort'), table.c.labels[key].as_string()))
+            indexes.append(_btree(index_name(part, 'sort'), label_text(table.c.labels, key)))
         if key in filterable:
-            indexes.append(_trgm_expression(index_name(part, 'trgm'), table.c.labels[key].as_string()))
+            indexes.append(_trgm_expression(index_name(part, 'trgm'), label_text(table.c.labels, key)))
         return indexes
     return []
 
 
 def _btree(name: str, expression: sa.ColumnElement[tp.Any]) -> ManagedIndex:
-    return ManagedIndex(sa.Index(name, expression), uses_trgm=False)
+    return ManagedIndex(sa.Index(name, expression, postgresql_concurrently=True), uses_trgm=False)
 
 
 def _trgm_column(name: str, column: sa.ColumnElement[tp.Any]) -> ManagedIndex:
@@ -106,6 +107,7 @@ def _trgm_column(name: str, column: sa.ColumnElement[tp.Any]) -> ManagedIndex:
         name,
         column,
         postgresql_using='gin',
+        postgresql_concurrently=True,
         postgresql_ops={column.key: 'gin_trgm_ops'},
     )
     return ManagedIndex(index, uses_trgm=True)
@@ -117,6 +119,7 @@ def _trgm_expression(name: str, expression: sa.ColumnElement[tp.Any]) -> Managed
         name,
         labeled,
         postgresql_using='gin',
+        postgresql_concurrently=True,
         postgresql_ops={'trgm_target': 'gin_trgm_ops'},
     )
     return ManagedIndex(index, uses_trgm=True)

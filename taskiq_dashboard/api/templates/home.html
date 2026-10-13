@@ -16,7 +16,7 @@
 
             <!-- Right side: Bulk actions -->
             <div class="relative" id="bulk-actions-container">
-                <div class="flex items-center gap-3">
+                <div class="flex flex-wrap items-center gap-3">
                     <div class="flex items-center gap-2" id="auto-refresh-controls">
                         <label class="flex items-center gap-2 text-sm text-ctp-subtext0 whitespace-nowrap">
                             <input type="checkbox" id="auto-refresh-toggle" class="w-4 h-4 text-ctp-blue bg-ctp-base border-ctp-subtext0 rounded focus:ring-ctp-blue focus:ring-2">
@@ -63,6 +63,7 @@
     <!-- Task table section -->
     <section class="overflow-x-auto mb-6 p-5">
         <table id="task-list" class="min-w-full divide-y divide-ctp-blue/20 table-auto"
+            hx-sync="this:replace"
             data-list-url="{{ url_for('Task list view') }}"
             data-sort-by="{{ sort_by }}"
             data-sort-order="{{ sort_order }}">
@@ -113,85 +114,7 @@
             </tbody>
         </table>
     </section>
-    <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            function closeFilterPanels() {
-                document.querySelectorAll('.column-filter-panel').forEach(function (panel) {
-                    panel.classList.add('hidden');
-                    var toggle = panel.parentElement.querySelector('.column-filter-toggle');
-                    if (toggle) toggle.setAttribute('aria-expanded', 'false');
-                });
-            }
-
-            function placeFilterPanel(button, panel) {
-                var rect = button.getBoundingClientRect();
-                var width = panel.offsetWidth;
-                var left = rect.left;
-                if (left + width > window.innerWidth - 8) {
-                    left = Math.max(8, rect.right - width);
-                }
-                panel.style.top = (rect.bottom + 4) + 'px';
-                panel.style.left = left + 'px';
-            }
-
-            document.querySelectorAll('.column-filter-toggle').forEach(function (button) {
-                var panel = button.parentElement.querySelector('.column-filter-panel');
-                var icon = button.querySelector('.column-filter-icon');
-                button.addEventListener('click', function (event) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    var willOpen = panel.classList.contains('hidden');
-                    closeFilterPanels();
-                    if (!willOpen) return;
-                    panel.classList.remove('hidden');
-                    button.setAttribute('aria-expanded', 'true');
-                    placeFilterPanel(button, panel);
-                    var input = panel.querySelector('input:not([type="hidden"])');
-                    if (input) input.focus();
-                });
-                panel.querySelectorAll('.task-filter').forEach(function (el) {
-                    var updateIcon = function () {
-                        var active = Array.from(panel.querySelectorAll('.task-filter')).some(function (field) {
-                            return field.value !== '';
-                        });
-                        icon.classList.toggle('text-ctp-blue', active);
-                        icon.classList.toggle('text-ctp-subtext0', !active);
-                    };
-                    el.addEventListener('input', updateIcon);
-                    el.addEventListener('change', updateIcon);
-                });
-            });
-
-            document.addEventListener('click', function (event) {
-                if (event.target.closest('.column-filter') || event.target.closest('.flatpickr-calendar')) return;
-                closeFilterPanels();
-            });
-            document.addEventListener('keydown', function (event) {
-                if (event.key === 'Escape') closeFilterPanels();
-            });
-            window.addEventListener('resize', closeFilterPanels);
-            var table = document.getElementById('task-list');
-            var scroller = table && table.closest('.overflow-x-auto');
-            if (scroller) scroller.addEventListener('scroll', closeFilterPanels);
-
-            document.querySelectorAll('a[data-sort-link]').forEach(function (link) {
-                link.addEventListener('click', function () {
-                    var url = new URL(link.href, window.location.origin);
-                    var params = new URLSearchParams();
-                    document.querySelectorAll('.task-filter').forEach(function (el) {
-                        if (!el.name || el.name === 'sort_by' || el.name === 'sort_order') return;
-                        params.set(el.name, el.value);
-                    });
-                    var sortBy = url.searchParams.get('sort_by');
-                    var sortOrder = url.searchParams.get('sort_order');
-                    if (sortBy) params.set('sort_by', sortBy);
-                    if (sortOrder) params.set('sort_order', sortOrder);
-                    url.search = params.toString();
-                    link.href = url.pathname + '?' + params.toString();
-                });
-            });
-        });
-    </script>
+    <script defer src="{{ url_for('static', path='task_filters.js') }}?v={{ static_version('task_filters.js') }}"></script>
     </main>
 
     <!-- Notification container -->
@@ -321,7 +244,7 @@
 
             // Update UI when new tasks are loaded via HTMX
             document.body.addEventListener('htmx:afterSwap', (e) => {
-                if (e.detail.target.id === 'task-list-body') {
+                if ((e.detail.target || e.target).id === 'task-list-body') {
                     // Remove task IDs from selection if their checkboxes no longer exist
                     const currentCheckboxes = Array.from(document.querySelectorAll('.task-checkbox'));
                     const currentTaskIds = new Set(currentCheckboxes.map(cb => cb.value));
@@ -358,9 +281,12 @@
                 params.set('offset', '0');
 
                 htmx.ajax('GET', taskList.dataset.listUrl + '?' + params.toString(), {
+                    source: taskList,
                     target: '#task-list-body',
                     swap: 'innerHTML',
                     headers: { 'X-Auto-Refresh': 'true' },
+                }).catch(function () {
+                    // A user filter can replace an in-flight refresh request.
                 });
             }
 

@@ -29,7 +29,11 @@ router = fastapi.APIRouter(
 
 
 class TaskFilter(pydantic.BaseModel):
-    q: str = ''
+    q: tp.Annotated[str, pydantic.StringConstraints(strip_whitespace=True)] = ''
+    name: str = ''
+    worker: str = ''
+    name_match: tp.Literal['contains', 'exact'] = 'contains'
+    worker_match: tp.Literal['contains', 'exact'] = 'contains'
     status: TaskStatus | None = None
     start_date: datetime.datetime | None = None
     end_date: datetime.datetime | None = None
@@ -100,11 +104,13 @@ def _form_values(
         elif control.kind == 'datetime':
             values[control.param] = dumped[control.param]
             values[control.end_param] = dumped[control.end_param]
-        elif control.kind == 'text':
+        elif control.kind in ('text', 'combobox'):
             if control.param.startswith('label.'):
                 values[control.param] = label_filters.get(control.param.removeprefix('label.'), '')
             else:
                 values[control.param] = text_filters.get(control.param, '')
+            if control.kind == 'combobox':
+                values[control.match_param] = getattr(query, control.match_param)
     if resolved_sort is not None:
         values['sort_by'] = resolved_sort
         values['sort_order'] = query.sort_order
@@ -126,13 +132,15 @@ def _has_filters(
             getattr(query, control.param) is not None or getattr(query, control.end_param) is not None
         ):
             return True
-        if control.kind != 'text':
+        if control.kind not in ('text', 'combobox'):
             continue
         raw = (
             label_filters.get(control.param.removeprefix('label.'), '')
             if control.param.startswith('label.')
             else text_filters.get(control.param, '')
         )
+        if control.kind == 'combobox' and getattr(query, control.match_param) == 'exact' and raw:
+            return True
         if len(raw.strip()) > 1:
             return True
     return False
@@ -152,7 +160,7 @@ async def search_tasks(  # noqa: PLR0913, PLR0917
     x_auto_refresh: tp.Annotated[bool, fastapi.Header(description='Background auto-refresh poll')] = False,  # noqa: FBT002
 ) -> HTMLResponse:
     columns = build_columns(settings.columns)
-    controls = build_filter_controls(settings.columns)
+    controls = build_filter_controls(settings.columns, columns)
     resolved_sort = resolve_sort(query.sort_by, settings.columns)
     search_control = next((control for control in controls if control.kind == 'search'), None)
     status_enabled = any(control.kind == 'status' for control in controls)
@@ -160,14 +168,17 @@ async def search_tasks(  # noqa: PLR0913, PLR0917
     finished_enabled = any(control.kind == 'datetime' and control.param == 'finished_start' for control in controls)
     text_filters: dict[str, str] = {}
     label_filters: dict[str, str] = {}
+    exact_filters: dict[str, str] = {}
     for control in controls:
-        if control.kind != 'text':
+        if control.kind not in ('text', 'combobox'):
             continue
         raw = request.query_params.get(control.param, '')
         if control.param.startswith('label.'):
             label_filters[control.param.removeprefix('label.')] = raw
         else:
-            text_filters[control.param] = raw
+            text_filters[control.param] = getattr(query, control.param)
+            if getattr(query, control.match_param) == 'exact' and text_filters[control.param]:
+                exact_filters[control.param] = text_filters[control.param]
     tasks = await repository.find_tasks(
         name=query.q if search_control is not None else None,
         status=query.status if status_enabled else None,
@@ -178,11 +189,13 @@ async def search_tasks(  # noqa: PLR0913, PLR0917
         text_filters=text_filters,
         label_filters=label_filters,
         search_fields=set(search_control.search_fields) if search_control is not None else set(),
+        exact_filters=exact_filters,
         sort_by=resolved_sort,
         sort_order=query.sort_order,
         limit=query.limit,
         offset=query.offset,
     )
+
     form_values = _form_values(
         query,
         controls,
@@ -219,6 +232,18 @@ async def search_tasks(  # noqa: PLR0913, PLR0917
         },
         headers=headers,
     )
+
+
+@router.get('/filters/{column}/values', name='Task filter values')
+async def task_filter_values(
+    column: tp.Literal['name', 'worker'],
+    repository: dishka_fastapi.FromDishka[AbstractTaskRepository],
+    settings: dishka_fastapi.FromDishka[Settings],
+    q: str = '',
+) -> list[str]:
+    if column not in settings.columns.filterable:
+        raise fastapi.HTTPException(status_code=404, detail='Column filter is not configured')
+    return await repository.suggest_values(column, query=q, limit=20)
 
 
 @router.get(

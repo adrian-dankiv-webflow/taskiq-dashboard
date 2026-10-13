@@ -1,7 +1,7 @@
 import logging
 import typing as tp
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import pydantic
 
@@ -20,11 +20,13 @@ BUILTIN_COLUMN_TITLES: dict[str, str] = {
     'runtime': 'Duration',
 }
 
-_FILTER_KINDS: dict[str, tp.Literal['search', 'text', 'status', 'datetime']] = {
+FilterKind = tp.Literal['search', 'combobox', 'text', 'status', 'datetime']
+
+_FILTER_KINDS: dict[str, FilterKind] = {
     'id': 'search',
-    'name': 'search',
+    'name': 'combobox',
     'status': 'status',
-    'worker': 'text',
+    'worker': 'combobox',
     'started_at': 'datetime',
     'finished_at': 'datetime',
 }
@@ -47,12 +49,12 @@ class Column(pydantic.BaseModel):
     kind: tp.Literal['builtin', 'label']
     sortable: bool = False
     filterable: bool = False
-    filter_kind: tp.Literal['search', 'text', 'status', 'datetime', 'none'] = 'none'
+    filter_kind: FilterKind | tp.Literal['none'] = 'none'
 
 
 @dataclass(frozen=True)
 class FilterControl:
-    kind: tp.Literal['search', 'text', 'status', 'datetime']
+    kind: FilterKind
     param: str
     end_param: str = ''
     title: str = ''
@@ -60,6 +62,14 @@ class FilterControl:
     search_fields: tuple[str, ...] = ()
     column_key: str = ''
     in_header: bool = False
+
+    @property
+    def match_param(self) -> str:
+        return f'{self.param}_match'
+
+    @property
+    def dom_id(self) -> str:
+        return quote(self.param, safe='')
 
 
 def build_columns(settings: ColumnSettings) -> list[Column]:
@@ -79,7 +89,7 @@ def build_columns(settings: ColumnSettings) -> list[Column]:
                 kind='builtin',
                 sortable=key in sortable,
                 filterable=is_filterable,
-                filter_kind=_filter_kind(key, 'builtin', filterable=is_filterable),
+                filter_kind=_FILTER_KINDS.get(key, 'none') if is_filterable else 'none',
             )
         )
 
@@ -95,64 +105,64 @@ def build_columns(settings: ColumnSettings) -> list[Column]:
                 kind='label',
                 sortable=key in sortable,
                 filterable=is_filterable,
-                filter_kind=_filter_kind(key, 'label', filterable=is_filterable),
+                filter_kind='text' if is_filterable else 'none',
             )
         )
 
     return columns
 
 
-def build_filter_controls(settings: ColumnSettings) -> list[FilterControl]:
-    columns = {column.key: column for column in build_columns(settings)}
+def build_filter_controls(settings: ColumnSettings, columns: list[Column] | None = None) -> list[FilterControl]:
+    by_key = {column.key: column for column in (build_columns(settings) if columns is None else columns)}
     controls: list[FilterControl] = []
-    search_emitted = False
+    search_keys = frozenset(candidate for candidate in ('id', 'name') if candidate in settings.filterable)
+    if search_keys:
+        controls.append(
+            FilterControl(
+                kind='search',
+                param='q',
+                title='Search',
+                placeholder=_SEARCH_PLACEHOLDERS[search_keys],
+                search_fields=tuple(candidate for candidate in ('id', 'name') if candidate in search_keys),
+            )
+        )
     for key in settings.filterable:
-        column = columns.get(key)
+        column = by_key.get(key)
         if column is None or not column.filterable:
             continue
         if column.filter_kind == 'search':
-            if search_emitted:
-                continue
-            search_keys = frozenset(candidate for candidate in ('id', 'name') if candidate in settings.filterable)
-            controls.append(
-                FilterControl(
-                    kind='search',
-                    param='q',
-                    title='Search',
-                    placeholder=_SEARCH_PLACEHOLDERS[search_keys],
-                    search_fields=tuple(candidate for candidate in ('id', 'name') if candidate in search_keys),
-                )
-            )
-            search_emitted = True
             continue
         if column.filter_kind == 'status':
             controls.append(
-                FilterControl(kind='status', param='status', title=column.title, placeholder='All Statuses')
+                FilterControl(
+                    kind='status',
+                    param='status',
+                    title=column.title,
+                    placeholder='All Statuses',
+                    column_key=key,
+                    in_header=True,
+                )
             )
             continue
         if column.filter_kind == 'datetime':
             param, end_param = _DATETIME_PARAMS[key]
-            # started_at keeps the existing filter-bar picker. Any other datetime column
-            # is filtered from its header so the bar does not grow another box.
-            in_header = key != 'started_at'
-            placeholder = ('Finished' if key == 'finished_at' else column.title) if in_header else 'Pick dates'
             controls.append(
                 FilterControl(
                     kind='datetime',
                     param=param,
                     end_param=end_param,
                     title=column.title,
-                    placeholder=placeholder,
+                    placeholder='Pick dates',
                     column_key=key,
-                    in_header=in_header,
+                    in_header=True,
                 )
             )
             continue
-        if column.filter_kind == 'text':
+        if column.filter_kind in ('text', 'combobox'):
             param = f'label.{key}' if column.kind == 'label' else key
             controls.append(
                 FilterControl(
-                    kind='text',
+                    kind=column.filter_kind,
                     param=param,
                     title=column.title,
                     placeholder=column.title,
@@ -179,16 +189,3 @@ def encode_list_query(base: dict[str, str], **overrides: object) -> str:
         else:
             params[key] = str(value)
     return urlencode(params)
-
-
-def _filter_kind(
-    key: str,
-    kind: tp.Literal['builtin', 'label'],
-    *,
-    filterable: bool,
-) -> tp.Literal['search', 'text', 'status', 'datetime', 'none']:
-    if not filterable:
-        return 'none'
-    if kind == 'label':
-        return 'text'
-    return _FILTER_KINDS.get(key, 'none')

@@ -12,11 +12,13 @@ from sqlalchemy.exc import IntegrityError
 from taskiq_dashboard.domain.dto.task import ExecutedTask, QueuedTask, StartedTask, Task
 from taskiq_dashboard.domain.dto.task_status import TaskStatus
 from taskiq_dashboard.domain.repositories import AbstractTaskRepository
+from taskiq_dashboard.infrastructure.database.expressions import label_text
 from taskiq_dashboard.infrastructure.database.schemas import PostgresTask, SqliteTask
 from taskiq_dashboard.infrastructure.database.session_provider import AsyncPostgresSessionProvider
 
 
 _DIRECT_SORT_COLUMNS = frozenset({'id', 'name', 'status', 'worker', 'started_at', 'finished_at'})
+_TEXT_FILTER_COLUMNS = frozenset({'name', 'worker'})
 _MIN_CONTAINS_LENGTH = 1
 
 
@@ -42,6 +44,7 @@ class TaskRepository(AbstractTaskRepository):
         text_filters: dict[str, str] | None = None,
         label_filters: dict[str, str] | None = None,
         search_fields: Collection[str] | None = None,
+        exact_filters: dict[str, str] | None = None,
     ) -> list[Task]:
         query = self._find_tasks_statement(
             name=name,
@@ -57,6 +60,7 @@ class TaskRepository(AbstractTaskRepository):
             text_filters=text_filters,
             label_filters=label_filters,
             search_fields=search_fields,
+            exact_filters=exact_filters,
         )
         async with self._session_provider.session() as session:
             result = await session.execute(query)
@@ -78,6 +82,7 @@ class TaskRepository(AbstractTaskRepository):
         text_filters: dict[str, str] | None,
         label_filters: dict[str, str] | None,
         search_fields: Collection[str] | None,
+        exact_filters: dict[str, str] | None = None,
     ) -> sa.Select[tp.Any]:
         query = sa.select(self.task)
         query = self._apply_search(query, name, search_fields)
@@ -91,16 +96,49 @@ class TaskRepository(AbstractTaskRepository):
             query = query.where(self.task.finished_at >= finished_start)
         if finished_end is not None:
             query = query.where(self.task.finished_at <= finished_end)
-        for key, value in (text_filters or {}).items():
-            if key == 'worker':
-                query = _apply_contains(query, self.task.worker, value)
+        query = self._apply_text_filters(query, text_filters, exact_filters)
         for key, value in (label_filters or {}).items():
-            query = _apply_contains(query, self.task.labels[key].as_string(), value)
+            query = _apply_contains(query, label_text(self.task.labels, key), value)
         if sort_by:
             sort_column = self._sort_expression(sort_by)
             order_fn = sort_column.asc() if sort_order == 'asc' else sort_column.desc()
             query = query.order_by(order_fn.nulls_last())
-        return query.limit(limit).offset(offset)
+        return query.order_by(self.task.id).limit(limit).offset(offset)
+
+    def _apply_text_filters(
+        self,
+        query: sa.Select[tp.Any],
+        text_filters: dict[str, str] | None,
+        exact_filters: dict[str, str] | None,
+    ) -> sa.Select[tp.Any]:
+        unsupported = (set(text_filters or {}) | set(exact_filters or {})) - _TEXT_FILTER_COLUMNS
+        if unsupported:
+            msg = f'Unsupported text filter columns: {sorted(unsupported)}'
+            raise ValueError(msg)
+        for key, value in (text_filters or {}).items():
+            if key not in (exact_filters or {}):
+                query = _apply_contains(query, getattr(self.task, key), value)
+        for key, value in (exact_filters or {}).items():
+            query = query.where(getattr(self.task, key) == value)
+        return query
+
+    async def suggest_values(
+        self,
+        column: tp.Literal['name', 'worker'],
+        query: str = '',
+        limit: int = 20,
+    ) -> list[str]:
+        if column not in _TEXT_FILTER_COLUMNS:
+            raise ValueError('Suggestions are supported only for name and worker')
+        value = getattr(self.task, column)
+        last_seen = sa.func.max(sa.func.coalesce(self.task.queued_at, self.task.started_at, self.task.finished_at))
+        statement = sa.select(value).where(value != '')
+        stripped = query.strip()
+        if stripped:
+            statement = statement.where(value.ilike(_contains_pattern(stripped), escape='/'))
+        statement = statement.group_by(value).order_by(last_seen.desc().nulls_last(), value).limit(limit)
+        async with self._session_provider.session() as session:
+            return list((await session.execute(statement)).scalars())
 
     def _apply_search(
         self,
@@ -108,15 +146,16 @@ class TaskRepository(AbstractTaskRepository):
         name: str | None,
         search_fields: Collection[str] | None,
     ) -> sa.Select[tp.Any]:
-        if not name or len(name) <= _MIN_CONTAINS_LENGTH:
+        stripped = (name or '').strip()
+        if len(stripped) <= _MIN_CONTAINS_LENGTH:
             return query
         fields = {'id', 'name'} if search_fields is None else set(search_fields)
-        search_pattern = f'%{name.strip()}%'
+        search_pattern = _contains_pattern(stripped)
         clauses = []
         if 'name' in fields:
-            clauses.append(self.task.name.ilike(search_pattern))
+            clauses.append(self.task.name.ilike(search_pattern, escape='/'))
         if 'id' in fields:
-            clauses.append(sa.cast(self.task.id, sa.String).ilike(search_pattern))
+            clauses.append(sa.cast(self.task.id, sa.String).ilike(search_pattern, escape='/'))
         if not clauses:
             return query
         return query.where(sa.or_(*clauses))
@@ -128,7 +167,7 @@ class TaskRepository(AbstractTaskRepository):
             return sa.func.unixepoch(self.task.finished_at) - sa.func.unixepoch(self.task.started_at)
         if sort_by in _DIRECT_SORT_COLUMNS:
             return getattr(self.task, sort_by)
-        return self.task.labels[sort_by].as_string()
+        return label_text(self.task.labels, sort_by)
 
     async def get_task_by_id(self, task_id: uuid.UUID) -> Task | None:
         query = sa.select(self.task).where(self.task.id == task_id)
@@ -248,4 +287,9 @@ def _apply_contains(query: sa.Select[tp.Any], column: tp.Any, value: str) -> sa.
     stripped = value.strip()
     if len(stripped) <= _MIN_CONTAINS_LENGTH:
         return query
-    return query.where(column.ilike(f'%{stripped}%'))
+    return query.where(column.ilike(_contains_pattern(stripped), escape='/'))
+
+
+def _contains_pattern(value: str) -> str:
+    escaped = value.replace('/', '//').replace('%', '/%').replace('_', '/_')
+    return f'%{escaped}%'

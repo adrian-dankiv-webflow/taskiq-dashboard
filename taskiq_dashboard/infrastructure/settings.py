@@ -17,6 +17,8 @@ class PostgresSettings(pydantic_settings.BaseSettings):
     user: str = 'taskiq-dashboard'
     password: SecretStr = SecretStr('look_in_vault')
     database: str = 'taskiq-dashboard'
+    index_management_dsn: SecretStr | None = None
+    """Direct or session-pooled endpoint for optional index DDL; never a transaction pool."""
 
     min_pool_size: int = 1
     max_pool_size: int = 5
@@ -134,9 +136,11 @@ class ColumnSettings(pydantic_settings.BaseSettings):
     labels: dict[str, str] = Field(default_factory=dict)
     """Maps a task label key to the column title shown for it, e.g. {"foo": "Foo"}."""
     filterable: list[str] = ['id', 'name', 'status', 'started_at']
-    """Displayed columns that show a filter control, in filter-bar order."""
+    """Displayed columns with filters; id and name also enable the global search."""
     sortable: list[str] = ['started_at', 'finished_at', 'runtime']
     """Displayed columns whose headers can be sorted."""
+    manage_indexes: bool = False
+    """Opt in to creating PostgreSQL indexes at startup; existing indexes are retained."""
 
     @field_validator('visible')
     @classmethod
